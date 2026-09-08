@@ -9,6 +9,8 @@ pub(crate) struct Database {
 impl Database {
     pub(crate) fn new(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
 
         conn.execute_batch(
             "

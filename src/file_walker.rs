@@ -15,7 +15,7 @@ use std::time::Duration;
 use std::{io, thread};
 use walkdir::WalkDir;
 
-const CHANNEL_CAP: usize = 0;
+const CHANNEL_CAP: usize = 1000;
 const WORKER_COUNT: usize = 10;
 
 enum FileWalkerEvent {
@@ -39,7 +39,8 @@ enum HashRequestMessage {
 }
 
 pub(crate) fn walk_and_hash(db: Database, path: PathBuf) -> Result<(), std::io::Error> {
-    let (file_walker_tx, file_walker_rx) = crossbeam_channel::bounded(CHANNEL_CAP);
+    // Filewlaker channel is used for backpressure retrieving a file list ist fast and unbounded would stall the other workers
+    let (file_walker_tx, file_walker_rx) = crossbeam_channel::bounded(0);
     let (hash_request_tx, hash_request_rx) = crossbeam_channel::bounded(CHANNEL_CAP);
     let (hash_response_tx, hash_response_rx) = crossbeam_channel::bounded(CHANNEL_CAP);
 
@@ -89,16 +90,15 @@ fn db_worker(
         if let Ok(msg) = file_rx.try_recv() {
             match msg {
                 FileFound { path, mtime, size } => {
-                    db.insert_file(&path, size, mtime)
-                        .expect("Database could not be written!");
-
                     if !db
                         .has_valid_hash(&path, mtime)
                         .expect("Database could not be read!")
                     {
                         debug!("Database worker requests hash for {}", path.display());
-                        hash_request_tx.send(NeedsHash { path })?;
+                        hash_request_tx.send(NeedsHash { path: path.clone() })?;
                     }
+                    db.insert_file(&path, size, mtime)
+                        .expect("Database could not be written!");
                 }
             }
             continue;
