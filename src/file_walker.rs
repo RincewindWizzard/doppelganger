@@ -1,5 +1,8 @@
 use crate::database::Database;
-use crate::file_walker::FileIndexEvent::{InsertFile, NeedsHash, UpdateHash};
+use crate::file_walker::DBCall::{InsertFile, UpdateHash};
+
+use crate::file_walker::DBResultMessage::NeedsHash;
+use crate::file_walker::FileWalkerMessage::FileFound;
 use crossbeam_channel::{Receiver, SendError, Sender};
 use hex_literal::hex;
 use log::{debug, error, info};
@@ -15,8 +18,15 @@ use walkdir::WalkDir;
 const CHANNEL_CAP: usize = 10000;
 const WORKER_COUNT: usize = 10;
 
-#[derive(Debug, Clone)]
-pub(crate) enum FileIndexEvent {
+enum FileWalkerMessage {
+    FileFound {
+        path: PathBuf,
+        mtime: i64,
+        size: u64,
+    },
+}
+
+enum DBCall {
     InsertFile {
         path: PathBuf,
         mtime: i64,
@@ -27,60 +37,46 @@ pub(crate) enum FileIndexEvent {
         mtime: i64,
         hash: [u8; 32],
     },
-    NeedsHash {
-        path: PathBuf,
-    },
+}
+
+enum DBResultMessage {
+    NeedsHash { path: PathBuf },
 }
 
 pub(crate) fn walk_and_hash(db: Database, path: PathBuf) -> Result<(), std::io::Error> {
-    let (sender, receiver) = crossbeam_channel::unbounded();
-
-    let db_worker = {
-        let sender = sender.clone();
-        let receiver = receiver.clone();
-        let db_worker = thread::spawn(move || {
-            db_worker(db, receiver, sender)?;
-            Ok::<(), SendError<FileIndexEvent>>(())
-        });
-        db_worker
-    };
-
+    let (db_sender, db_receiver) = crossbeam_channel::unbounded();
+    let (hash_sender, hash_receiver) = crossbeam_channel::unbounded();
     {
-        let sender = sender.clone();
+        let db_sender = db_sender.clone();
         thread::spawn(move || {
-            collect_files_worker(&path, sender);
+            collect_files_worker(&path, db_sender);
         });
     }
 
+    let db_worker = {
+        let sender = hash_sender.clone();
+        let receiver = db_receiver.clone();
+        let db_worker = thread::spawn(move || db_worker(db, receiver, sender));
+        db_worker
+    };
+
     for i in 0..WORKER_COUNT {
         {
-            let sender = sender.clone();
-            let receiver = receiver.clone();
+            let sender = db_sender.clone();
+            let receiver = hash_receiver.clone();
             thread::spawn(move || hash_worker(receiver, sender));
         }
     }
 
-    log_worker(receiver);
-    db_worker.join().unwrap();
+    db_worker.join().unwrap().unwrap();
     Ok(())
-}
-
-fn log_worker(input: Receiver<FileIndexEvent>) {
-    for msg in input {
-        match msg {
-            FileIndexEvent::UpdateHash { path, mtime, hash } => {
-                info!("Hash updated: {}: {}", path.display(), hex::encode(hash));
-            }
-            _ => {}
-        }
-    }
 }
 
 fn db_worker(
     db: Database,
-    input: Receiver<FileIndexEvent>,
-    output: Sender<FileIndexEvent>,
-) -> Result<(), SendError<FileIndexEvent>> {
+    input: Receiver<DBCall>,
+    output: Sender<DBResultMessage>,
+) -> Result<(), SendError<DBResultMessage>> {
     for msg in input {
         match msg {
             InsertFile { path, size, mtime } => {
@@ -98,6 +94,7 @@ fn db_worker(
             UpdateHash { path, mtime, hash } => {
                 db.update_hash(&path, &hash, mtime)
                     .expect("Database could not be written!");
+                info!("Hash updated: {}: {}", path.display(), hex::encode(hash));
             }
             _ => {}
         }
@@ -106,16 +103,16 @@ fn db_worker(
 }
 
 fn hash_worker(
-    input: Receiver<FileIndexEvent>,
-    output: Sender<FileIndexEvent>,
-) -> Result<(), SendError<FileIndexEvent>> {
+    input: Receiver<DBResultMessage>,
+    output: Sender<DBCall>,
+) -> Result<(), SendError<DBCall>> {
     for msg in input {
         match msg {
-            FileIndexEvent::NeedsHash { path } => {
+            NeedsHash { path } => {
                 if let Ok((mtime, hash)) = generate_hash(&path) {
                     debug!("Hash worker publishes hash for {}", path.display());
 
-                    output.send(FileIndexEvent::UpdateHash { path, mtime, hash })?;
+                    output.send(UpdateHash { path, mtime, hash })?;
                 }
             }
             _ => {}
@@ -124,7 +121,7 @@ fn hash_worker(
     Ok(())
 }
 
-pub(crate) fn collect_files_worker(path: &Path, output: Sender<FileIndexEvent>) {
+pub(crate) fn collect_files_worker(path: &Path, output: Sender<DBCall>) {
     let path = path.to_path_buf();
 
     for entry in WalkDir::new(path) {

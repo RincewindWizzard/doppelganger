@@ -59,7 +59,7 @@ impl Database {
             "
         UPDATE files
         SET hash = ?1,
-            scanned_at = ?2
+            scanned_at = ?2,
             mtime = ?4
         WHERE path = ?3
         ",
