@@ -19,11 +19,12 @@ const WORKER_COUNT: usize = 10;
 pub(crate) enum FileIndexEvent {
     InsertFile {
         path: PathBuf,
-        size: u64,
         mtime: i64,
+        size: u64,
     },
     UpdateHash {
         path: PathBuf,
+        mtime: i64,
         hash: [u8; 32],
     },
     NeedsHash {
@@ -67,7 +68,7 @@ pub(crate) fn walk_and_hash(db: Database, path: PathBuf) -> Result<(), std::io::
 fn log_worker(input: Receiver<FileIndexEvent>) {
     for msg in input {
         match msg {
-            FileIndexEvent::UpdateHash { path, hash } => {
+            FileIndexEvent::UpdateHash { path, mtime, hash } => {
                 info!("Hash updated: {}: {}", path.display(), hex::encode(hash));
             }
             _ => {}
@@ -94,8 +95,8 @@ fn db_worker(
                     output.send(NeedsHash { path })?;
                 }
             }
-            UpdateHash { path, hash } => {
-                db.update_hash(&path, &hash)
+            UpdateHash { path, mtime, hash } => {
+                db.update_hash(&path, &hash, mtime)
                     .expect("Database could not be written!");
             }
             _ => {}
@@ -111,10 +112,10 @@ fn hash_worker(
     for msg in input {
         match msg {
             FileIndexEvent::NeedsHash { path } => {
-                let hash = generate_hash(&path);
-                if let Ok(hash) = hash {
+                if let Ok((mtime, hash)) = generate_hash(&path) {
                     debug!("Hash worker publishes hash for {}", path.display());
-                    output.send(FileIndexEvent::UpdateHash { path, hash })?;
+
+                    output.send(FileIndexEvent::UpdateHash { path, mtime, hash })?;
                 }
             }
             _ => {}
@@ -148,7 +149,7 @@ pub(crate) fn collect_files_worker(path: &Path, output: Sender<FileIndexEvent>) 
     drop(output);
 }
 
-fn generate_hash(path: &Path) -> Result<[u8; 32], io::Error> {
+fn generate_hash(path: &Path) -> Result<(i64, [u8; 32]), io::Error> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
 
@@ -165,5 +166,7 @@ fn generate_hash(path: &Path) -> Result<[u8; 32], io::Error> {
         hasher.update(&buffer[..bytes_read]);
     }
 
-    Ok(hasher.finalize().into())
+    let mtime = path.metadata()?.mtime();
+
+    Ok((mtime, hasher.finalize().into()))
 }

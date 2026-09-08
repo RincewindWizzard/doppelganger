@@ -49,7 +49,7 @@ impl Database {
         Ok(())
     }
 
-    pub(crate) fn update_hash(&self, path: &Path, hash: &[u8; 32]) -> Result<()> {
+    pub(crate) fn update_hash(&self, path: &Path, hash: &[u8; 32], mtime: i64) -> Result<()> {
         let scanned_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time is before Unix epoch")
@@ -60,9 +60,10 @@ impl Database {
         UPDATE files
         SET hash = ?1,
             scanned_at = ?2
+            mtime = ?4
         WHERE path = ?3
         ",
-            (hash.as_slice(), scanned_at, path.to_string_lossy().as_ref()),
+            (hash.as_slice(), scanned_at, path.to_string_lossy().as_ref(), mtime),
         )?;
 
         debug!("Updated hash for file {:?} into database", path);
