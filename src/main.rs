@@ -65,7 +65,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     // filewalker::walk_and_hash(cli.dst)?;
     let db = Database::new(&cli.database)?;
 
-    filewalker_C::walk_and_hash(cli.dst)?;
+    filewalker_C::walk_and_hash(db, cli.dst)?;
 
     Ok(())
 }
