@@ -1,9 +1,14 @@
+mod database;
 mod filewalker;
+mod filewalker_parallel;
+mod filewalker_C;
 
+use crate::database::Database;
+use crate::filewalker_parallel::DbMessage;
 use clap::Parser;
+use filewalker_parallel::collect_files_parallel;
 use log::{debug, error, info};
-use std::path::PathBuf;
-
+use std::path::{Path, PathBuf};
 
 #[derive(Parser, Debug)]
 #[command(name = "envbuddel")]
@@ -19,7 +24,7 @@ struct Cli {
     dst: PathBuf,
 
     /// path to database file where result is stored
-    #[arg(long, default_value = "doppelganger.db")]
+    #[arg(long, default_value = "./doppelganger.db")]
     database: PathBuf,
 }
 
@@ -49,7 +54,6 @@ fn main() {
     let cli = Cli::parse();
     init_logger(cli.verbose);
 
-
     debug!("{:?}", cli);
     if let Err(err) = run(cli) {
         error!("{}", err);
@@ -58,6 +62,22 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    filewalker::walk_and_hash(cli.dst)?;
+    // filewalker::walk_and_hash(cli.dst)?;
+    let db = Database::new(&cli.database)?;
+
+    let receiver = collect_files_parallel(&cli.dst);
+
+    for msg in receiver {
+        match msg {
+            DbMessage::InsertFile { path, size, mtime } => {
+                info!("Inserting file: {}", path.display());
+                if let Err(e) = db.insert_file(&PathBuf::from(path), size, mtime) {
+                    error!("{}", e);
+                }
+            }
+            DbMessage::UpdateHash { .. } => {}
+        }
+    }
+
     Ok(())
 }

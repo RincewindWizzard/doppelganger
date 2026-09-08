@@ -10,10 +10,7 @@ use std::time::Duration;
 use std::{io, thread};
 use walkdir::WalkDir;
 
-struct FilePath {
-    path: Box<Path>,
-    size: u64,
-}
+
 
 fn collect_files(path: &Path) -> Vec<PathBuf> {
     let mut result: Vec<PathBuf> = Vec::new();
@@ -49,26 +46,43 @@ fn generate_hash(path: &Path) -> Result<[u8; 32], io::Error> {
 }
 
 #[derive(Debug)]
-struct FileEntry {
+pub(crate) struct FileEntry {
     path: PathBuf,
     size: u64,
+    mtime: i64,
     hash: [u8; 32],
 }
 impl FileEntry {
-    fn new(path: &Path, size: u64, hash: [u8; 32]) -> Self {
+    fn new(path: &Path, mtime: i64, size: u64, hash: [u8; 32]) -> Self {
         Self {
             path: path.to_path_buf(),
             size,
+            mtime,
             hash,
         }
     }
     fn hash_str(&self) -> String {
         hex::encode(self.hash)
     }
+    pub(crate) fn size(&self) -> u64 {
+        self.size
+    }
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+    pub(crate) fn mtime(&self) -> i64 {
+        self.mtime
+    }
 }
 
 fn visit_file(path: &Path) -> Result<FileEntry, io::Error> {
-    Ok(FileEntry::new(path, path.metadata()?.len(), generate_hash(path)?))
+    let meta = path.metadata()?;
+    Ok(FileEntry::new(
+        path,
+        meta.mtime(),
+        meta.len(),
+        generate_hash(path)?,
+    ))
 }
 pub(crate) fn walk_and_hash(path: PathBuf) -> Result<(), std::io::Error> {
     use rayon::prelude::*;
@@ -84,7 +98,7 @@ pub(crate) fn walk_and_hash(path: PathBuf) -> Result<(), std::io::Error> {
             }
         })
         .map(|entry| {
-            info!("Processed {:?}", entry);
+            info!("Processed {} -> {}", entry.path.display(), entry.hash_str());
             entry
         })
         .collect();
