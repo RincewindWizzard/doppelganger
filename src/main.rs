@@ -65,19 +65,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     // filewalker::walk_and_hash(cli.dst)?;
     let db = Database::new(&cli.database)?;
 
-    let receiver = collect_files_parallel(&cli.dst);
-
-    for msg in receiver {
-        match msg {
-            DbMessage::InsertFile { path, size, mtime } => {
-                info!("Inserting file: {}", path.display());
-                if let Err(e) = db.insert_file(&PathBuf::from(path), size, mtime) {
-                    error!("{}", e);
-                }
-            }
-            DbMessage::UpdateHash { .. } => {}
-        }
-    }
+    filewalker_C::walk_and_hash(cli.dst)?;
 
     Ok(())
 }
