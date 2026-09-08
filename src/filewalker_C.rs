@@ -1,8 +1,8 @@
 use crate::database::Database;
 use crate::filewalker::FileEntry;
-use crate::filewalker_C::FileIndexEvent::{InsertFile, UpdateHash};
-use crossbeam_channel::{Receiver, SendError};
-use log::{error, info};
+use crate::filewalker_C::FileIndexEvent::{InsertFile, NeedsHash, UpdateHash};
+use crossbeam_channel::{Receiver, SendError, Sender};
+use log::{debug, error, info};
 use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{BufReader, Read};
@@ -26,46 +26,36 @@ pub(crate) enum FileIndexEvent {
         path: PathBuf,
         hash: [u8; 32],
     },
+    NeedsHash {
+        path: PathBuf,
+    },
 }
 
 pub(crate) fn walk_and_hash(db: Database, path: PathBuf) -> Result<(), std::io::Error> {
-    let (db_sender, db_receiver) = crossbeam_channel::bounded(CHANNEL_CAP);
+    let (sender, receiver) = crossbeam_channel::bounded(CHANNEL_CAP);
 
-    let db_worker = thread::spawn(move || {
-        for msg in db_receiver {
-            match msg {
-                InsertFile { path, size, mtime } => {
-                    db.insert_file(Path::new(&path), size, mtime)
-                        .expect("Database could not be written!");
-                }
-                UpdateHash { path, hash } => {
-                    db.update_hash(&path, &hash)
-                        .expect("Database could not be written!");
-                }
-            }
-        }
-    });
+    let db_worker = {
+        let sender = sender.clone();
+        let receiver = receiver.clone();
+        let db_worker = thread::spawn(move || {
+            db_worker(db, receiver, sender)?;
+            Ok::<(), SendError<FileIndexEvent>>(())
+        });
+        db_worker
+    };
 
-    let file_queue = collect_files_parallel(&path);
+    {
+        let sender = sender.clone();
+        thread::spawn(move || {
+            collect_files_worker(&path, sender);
+        });
+    }
 
     for i in 0..WORKER_COUNT {
         {
-            let file_queue = file_queue.clone();
-            let db_sender = db_sender.clone();
-            thread::spawn(move || {
-                for msg in file_queue {
-                    db_sender.send(msg.clone())?;
-                    match process_event(msg) {
-                        Ok(event) => {
-                            if let Some(event) = event {
-                                db_sender.send(event)?;
-                            }
-                        }
-                        Err(e) => error!("{}", e),
-                    }
-                }
-                Ok::<(), SendError<FileIndexEvent>>(())
-            });
+            let sender = sender.clone();
+            let receiver = receiver.clone();
+            thread::spawn(move || hash_worker(receiver, sender));
         }
     }
 
@@ -73,42 +63,77 @@ pub(crate) fn walk_and_hash(db: Database, path: PathBuf) -> Result<(), std::io::
     Ok(())
 }
 
-fn process_event(event: FileIndexEvent) -> Result<Option<FileIndexEvent>, std::io::Error> {
-    Ok(match event {
-        FileIndexEvent::InsertFile { path, size, mtime } => {
-            let hash = generate_hash(&path)?;
-            Some(UpdateHash { path, hash })
-        }
-        FileIndexEvent::UpdateHash { .. } => None,
-    })
-}
+fn db_worker(
+    db: Database,
+    input: Receiver<FileIndexEvent>,
+    output: Sender<FileIndexEvent>,
+) -> Result<(), SendError<FileIndexEvent>> {
+    for msg in input {
+        match msg {
+            InsertFile { path, size, mtime } => {
+                db.insert_file(&path, size, mtime)
+                    .expect("Database could not be written!");
 
-pub(crate) fn collect_files_parallel(path: &Path) -> Receiver<FileIndexEvent> {
-    let (sender, receiver) = crossbeam_channel::bounded(CHANNEL_CAP);
-    let path = path.to_path_buf();
-    thread::spawn(move || {
-        for entry in WalkDir::new(path) {
-            if let Ok(entry) = entry {
-                if entry.file_type().is_file() {
-                    // result.push(entry.into_path());
-                    let (size, mtime) = if let Ok(meta) = entry.metadata() {
-                        (meta.len(), meta.mtime())
-                    } else {
-                        (0, 0)
-                    };
-
-                    let msg = InsertFile {
-                        path: entry.path().to_path_buf(),
-                        size,
-                        mtime,
-                    };
-                    sender.send(msg).unwrap();
+                if db
+                    .has_valid_hash(&path, mtime)
+                    .expect("Database could not be read!")
+                {
+                    debug!("Database worker requests hash for {}", path.display());
+                    output.send(NeedsHash { path })?;
                 }
             }
+            UpdateHash { path, hash } => {
+                db.update_hash(&path, &hash)
+                    .expect("Database could not be written!");
+            }
+            _ => {}
         }
-        drop(sender);
-    });
-    receiver
+    }
+    Ok(())
+}
+
+fn hash_worker(
+    input: Receiver<FileIndexEvent>,
+    output: Sender<FileIndexEvent>,
+) -> Result<(), SendError<FileIndexEvent>> {
+    for msg in input {
+        match msg {
+            FileIndexEvent::NeedsHash { path } => {
+                let hash = generate_hash(&path);
+                if let Ok(hash) = hash {
+                    debug!("Hash worker publishes hash for {}", path.display());
+                    output.send(FileIndexEvent::UpdateHash { path, hash })?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn collect_files_worker(path: &Path, output: Sender<FileIndexEvent>) {
+    let path = path.to_path_buf();
+
+    for entry in WalkDir::new(path) {
+        if let Ok(entry) = entry {
+            if entry.file_type().is_file() {
+                // result.push(entry.into_path());
+                let (size, mtime) = if let Ok(meta) = entry.metadata() {
+                    (meta.len(), meta.mtime())
+                } else {
+                    (0, 0)
+                };
+
+                let msg = InsertFile {
+                    path: entry.path().to_path_buf(),
+                    size,
+                    mtime,
+                };
+                output.send(msg).unwrap();
+            }
+        }
+    }
+    drop(output);
 }
 
 fn generate_hash(path: &Path) -> Result<[u8; 32], io::Error> {

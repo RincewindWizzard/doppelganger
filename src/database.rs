@@ -1,8 +1,8 @@
 use crate::filewalker::FileEntry;
+use log::info;
 use rusqlite::{Connection, Result};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
-use log::info;
 
 pub(crate) struct Database {
     conn: Connection,
@@ -43,17 +43,12 @@ impl Database {
             size = excluded.size,
             mtime = excluded.mtime
         ",
-            (
-                path.to_string_lossy().as_ref(),
-                size as i64,
-                mtime,
-            ),
+            (path.to_string_lossy().as_ref(), size as i64, mtime),
         )?;
 
         info!("Inserted file {:?}", path);
         Ok(())
     }
-
 
     pub(crate) fn update_hash(&self, path: &Path, hash: &[u8; 32]) -> Result<()> {
         let scanned_at = SystemTime::now()
@@ -68,13 +63,27 @@ impl Database {
             scanned_at = ?2
         WHERE path = ?3
         ",
-            (
-                hash.as_slice(),
-                scanned_at,
-                path.to_string_lossy().as_ref(),
-            ),
+            (hash.as_slice(), scanned_at, path.to_string_lossy().as_ref()),
         )?;
 
         Ok(())
+    }
+
+    pub(crate) fn has_valid_hash(&self, path: &Path, mtime: i64) -> Result<bool> {
+        let valid: bool = self.conn.query_row(
+            "
+        SELECT EXISTS(
+            SELECT 1
+            FROM files
+            WHERE path = ?1
+              AND mtime >= ?2
+              AND hash IS NOT NULL
+        )
+        ",
+            (path.to_string_lossy().as_ref(), mtime),
+            |row| row.get(0),
+        )?;
+
+        Ok(valid)
     }
 }
