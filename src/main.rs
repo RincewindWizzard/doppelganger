@@ -1,12 +1,13 @@
-use std::path::PathBuf;
+mod filewalker;
+
 use clap::Parser;
 use log::{debug, error, info};
+use std::path::PathBuf;
 
-mod config;
 
 #[derive(Parser, Debug)]
 #[command(name = "envbuddel")]
-#[command(about = "File-based secret manager for CI/CD pipelines", long_about = None)]
+#[command(about = "Hash indexer for files", long_about = None)]
 #[command(version = env!("CARGO_PKG_VERSION"))]
 struct Cli {
     /// Increase verbosity (-v, -vv, -vvv)
@@ -14,7 +15,7 @@ struct Cli {
     verbose: u8,
 
     /// path to folder that will be indexed
-    #[arg(long, default_value = ".")]
+    #[arg(default_value = ".")]
     dst: PathBuf,
 
     /// path to database file where result is stored
@@ -48,10 +49,8 @@ fn main() {
     let cli = Cli::parse();
     init_logger(cli.verbose);
 
-    debug!("Verbosity: {}", cli.verbose);
-    info!("Info");
-    error!("Error");
-    println!("{:?}", cli);
+
+    debug!("{:?}", cli);
     if let Err(err) = run(cli) {
         error!("{}", err);
         std::process::exit(1);
@@ -59,5 +58,6 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    filewalker::walk_and_hash(cli.dst)?;
     Ok(())
 }
