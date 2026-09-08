@@ -1,7 +1,7 @@
 use crate::database::Database;
-use crate::filewalker::FileEntry;
-use crate::filewalker_C::FileIndexEvent::{InsertFile, NeedsHash, UpdateHash};
+use crate::file_walker::FileIndexEvent::{InsertFile, NeedsHash, UpdateHash};
 use crossbeam_channel::{Receiver, SendError, Sender};
+use hex_literal::hex;
 use log::{debug, error, info};
 use sha2::{Digest, Sha256};
 use std::fs::File;
@@ -32,7 +32,7 @@ pub(crate) enum FileIndexEvent {
 }
 
 pub(crate) fn walk_and_hash(db: Database, path: PathBuf) -> Result<(), std::io::Error> {
-    let (sender, receiver) = crossbeam_channel::bounded(CHANNEL_CAP);
+    let (sender, receiver) = crossbeam_channel::unbounded();
 
     let db_worker = {
         let sender = sender.clone();
@@ -59,8 +59,20 @@ pub(crate) fn walk_and_hash(db: Database, path: PathBuf) -> Result<(), std::io::
         }
     }
 
+    log_worker(receiver);
     db_worker.join().unwrap();
     Ok(())
+}
+
+fn log_worker(input: Receiver<FileIndexEvent>) {
+    for msg in input {
+        match msg {
+            FileIndexEvent::UpdateHash { path, hash } => {
+                info!("Hash updated: {}: {}", path.display(), hex::encode(hash));
+            }
+            _ => {}
+        }
+    }
 }
 
 fn db_worker(
@@ -74,7 +86,7 @@ fn db_worker(
                 db.insert_file(&path, size, mtime)
                     .expect("Database could not be written!");
 
-                if db
+                if !db
                     .has_valid_hash(&path, mtime)
                     .expect("Database could not be read!")
                 {

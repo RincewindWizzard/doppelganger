@@ -1,5 +1,4 @@
-use crate::filewalker::FileEntry;
-use log::info;
+use log::{debug, info};
 use rusqlite::{Connection, Result};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -46,7 +45,7 @@ impl Database {
             (path.to_string_lossy().as_ref(), size as i64, mtime),
         )?;
 
-        info!("Inserted file {:?}", path);
+        debug!("Inserted file {:?} into database", path);
         Ok(())
     }
 
@@ -66,6 +65,7 @@ impl Database {
             (hash.as_slice(), scanned_at, path.to_string_lossy().as_ref()),
         )?;
 
+        debug!("Updated hash for file {:?} into database", path);
         Ok(())
     }
 
@@ -84,6 +84,11 @@ impl Database {
             |row| row.get(0),
         )?;
 
+        if valid {
+            debug!("File {} has valid hash in database", path.display());
+        } else {
+            debug!("File {} has no valid hash in database", path.display());
+        }
         Ok(valid)
     }
 }

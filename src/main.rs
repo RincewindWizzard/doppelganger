@@ -1,12 +1,9 @@
 mod database;
-mod filewalker;
-mod filewalker_parallel;
-mod filewalker_C;
+
+mod file_walker;
 
 use crate::database::Database;
-use crate::filewalker_parallel::DbMessage;
 use clap::Parser;
-use filewalker_parallel::collect_files_parallel;
 use log::{debug, error, info};
 use std::path::{Path, PathBuf};
 
@@ -62,10 +59,9 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    // filewalker::walk_and_hash(cli.dst)?;
     let db = Database::new(&cli.database)?;
 
-    filewalker_C::walk_and_hash(db, cli.dst)?;
+    file_walker::walk_and_hash(db, cli.dst)?;
 
     Ok(())
 }
